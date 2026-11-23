@@ -73,7 +73,13 @@ a.dl{display:block;padding:12px;border-radius:11px;background:linear-gradient(90
 .hitem small{color:var(--mu);display:block}
 .empty{color:var(--mu);font-size:14px}
 footer{margin-top:24px;text-align:center;color:var(--mu);font-size:12.5px;line-height:1.5}
+#log{white-space:pre-wrap;word-break:break-word;font-size:12px;color:var(--mu);background:rgba(0,0,0,.35);border:1px solid var(--bd);border-radius:10px;padding:10px;max-height:260px;overflow:auto;margin:8px 0 0}
+details.dbg{margin-top:10px;font-size:13px;color:var(--mu)}
+details.dbg summary{cursor:pointer}
 </style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap">
 </head>
 <body>
 <div class="wrap">
@@ -101,6 +107,7 @@ footer{margin-top:24px;text-align:center;color:var(--mu);font-size:12.5px;line-h
           <div>
             <label>Стиль рисовки</label>
             <select id="style">
+              <option value="flat 2D vector cartoon, thick clean shapes, simple faces, muted moody color palette, adult animation style like viral TikTok horror comedy series, full-bleed scene">Плоская 2D (как в ТикТоке)</option>
               <option value="colorful 2D cartoon, bold clean outlines, vibrant colors, kids animation style">Мультик 2D</option>
               <option value="Pixar style 3D animated movie still, soft cinematic lighting, expressive faces">3D как Pixar</option>
               <option value="anime style, cel shaded, detailed painterly background, vivid colors">Аниме</option>
@@ -172,6 +179,7 @@ footer{margin-top:24px;text-align:center;color:var(--mu);font-size:12.5px;line-h
 
         <label class="check"><input type="checkbox" id="review"> Остановиться после сюжета — я хочу отредактировать</label>
         <button class="btn" id="go" type="button">✨ Сделать видео</button>
+        <button class="btn2" id="testBtn" type="button" style="width:100%;margin-top:10px">🔧 Проверить связь с сервисами</button>
       </div>
 
       <div class="card" id="storyCard" hidden>
@@ -189,13 +197,14 @@ footer{margin-top:24px;text-align:center;color:var(--mu);font-size:12.5px;line-h
         </div>
         <div class="bar"><i id="bar"></i></div>
         <div id="status">Выбери жанр, напиши идею (или оставь пустой) и жми «Сделать видео».</div>
+        <details class="dbg" id="dbg"><summary>Журнал (для отладки)</summary><pre id="log">пусто</pre></details>
         <div class="stage">
           <canvas id="cv" width="720" height="1280"></canvas>
           <video id="vid" controls playsinline hidden></video>
         </div>
         <div class="actions">
           <a id="dl" class="dl" hidden download>⬇️ Скачать видео</a>
-          <button class="btn2" id="rebuild" type="button" hidden>🔁 Пересобрать</button>
+          <button class="btn2" id="rebuild" type="button" hidden>🔁 Дозагрузить и пересобрать</button>
         </div>
         <div class="note" id="tip" hidden></div>
         <div class="meta" id="meta" hidden>
@@ -228,6 +237,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const rnd=()=>Math.floor(Math.random()*1e9);
 const W=720,H=1280,FADE=0.35;
 const KB=['in','left','out','right','up'];
+const SUBFONT='700 80px Oswald,Impact,"Arial Narrow",sans-serif';
 
 const CATS={
   funny:{name:'😂 Смешное',hint:'comedy with an absurd escalation and a great punchline'},
@@ -250,7 +260,7 @@ let cat='funny',S=null,busy=false,actx=null,contResolve=null,wake=null;
 /* ---------- UI helpers ---------- */
 function status(t,p){$('status').textContent=t;if(p!=null)$('bar').style.width=Math.max(0,Math.min(100,p))+'%'}
 function setStep(i){[...$('steps').children].forEach((el,k)=>{el.className='step'+(k<i?' done':'')+(k===i?' on':'')})}
-function lock(b){busy=b;['go','rndBtn','aiBtn','rebuild'].forEach(id=>$(id).disabled=b);document.querySelectorAll('.scene .mini').forEach(x=>x.disabled=b)}
+function lock(b){busy=b;['go','rndBtn','aiBtn','rebuild','testBtn'].forEach(id=>$(id).disabled=b);document.querySelectorAll('.scene .mini').forEach(x=>x.disabled=b)}
 function initAudio(){if(!actx)actx=new (window.AudioContext||window.webkitAudioContext)();return actx.resume()}
 
 function buildCats(){
@@ -263,6 +273,13 @@ function buildCats(){
 buildCats();
 
 /* ---------- network ---------- */
+const logLines=[];
+function log(m){
+  logLines.push(new Date().toLocaleTimeString()+' '+m);
+  if(logLines.length>80)logLines.shift();
+  const el=$('log');if(el)el.textContent=logLines.join('\n');
+}
+function short(u){return String(u).replace(/^https?:\/\//,'').slice(0,64)}
 async function fetchRetry(url,opts={},tries=4,timeout=90000){
   let err;
   for(let t=0;t<tries;t++){
@@ -272,7 +289,13 @@ async function fetchRetry(url,opts={},tries=4,timeout=90000){
       clearTimeout(to);
       if(r.ok)return r;
       err=new Error('HTTP '+r.status);
-    }catch(e){clearTimeout(to);err=e}
+      log(short(url)+' → HTTP '+r.status+(t<tries-1?' (повтор)':''));
+      await sleep(r.status===429?9000*(t+1):2500*(t+1));
+      continue;
+    }catch(e){
+      clearTimeout(to);err=e;
+      log(short(url)+' → '+(e&&e.name==='AbortError'?'таймаут':(e&&e.message)||e));
+    }
     await sleep(2500*(t+1));
   }
   throw err;
@@ -305,7 +328,7 @@ async function genStory(topic){
   const sys=`You are a viral YouTube Shorts / TikTok scriptwriter and cartoon director. Genre: ${CATS[cat].hint}.
 Write a ${n}-scene vertical cartoon short (about ${secs} seconds). Rules: scene 1 is a strong hook that grabs attention within 2 seconds; every scene moves the plot forward; the last scene delivers the payoff or twist. Narration language: ${lang}. Each narration is 1-2 short punchy sentences (10-18 words), natural spoken language.
 Return ONLY valid JSON, no markdown:
-{"title":"catchy title in ${lang}, max 6 words","description":"2 sentences in ${lang} for the video description","hashtags":["#shorts","...5-7 tags total"],"character":"very detailed English description of the main character appearance used in every image (species, colors, clothes, distinctive features)","scenes":[{"narration":"...","image":"English visual description of this scene: action, setting, emotion, camera angle. Always mention the main character."}]}
+{"title":"catchy title in ${lang}, max 6 words","description":"2 sentences in ${lang} for the video description","hashtags":["#shorts","...5-7 tags total"],"character":"very detailed English description of the main character appearance used in every image (species or person, colors, clothes, distinctive features)","setting":"short English description of the main location, the same in every scene (room, colors, key furniture)","scenes":[{"narration":"...","caption":"optional very short on-screen label in ${lang} such as a time or place (e.g. SATURDAY, 7:00) or empty string","image":"English visual description of this scene: action, emotion, camera angle. Always mention the main character."}]}
 Exactly ${n} scenes.`;
   let err;
   for(let t=0;t<3;t++){
@@ -344,7 +367,7 @@ function setThumb(i){
 
 /* ---------- assets ---------- */
 function imgPrompt(sc){
-  return `${S.style}. ${S.character}. ${sc.imagePrompt}. vertical 9:16 composition, cinematic lighting, highly detailed, no text, no letters, no watermark`.slice(0,900);
+  return `${S.style}. Setting: ${S.setting}. ${S.character}. ${sc.imagePrompt}. vertical 9:16 composition, no text, no letters, no watermark`.slice(0,900);
 }
 async function ensureImage(sc,force){
   const prompt=imgPrompt(sc),q=$('quality').value,key=prompt+'|'+sc.seed+'|'+q;
@@ -375,8 +398,8 @@ async function buildAssets(){
   const total=S.scenes.length*2;let done=0;
   const bump=()=>{done++;status(`Рисую кадры и озвучиваю: ${done} из ${total}…`,10+55*done/total)};
   await Promise.all([
-    pool(S.scenes,2,async(sc,i)=>{await ensureImage(sc);setThumb(i);bump()}),
-    pool(S.scenes,2,async sc=>{await ensureVoice(sc);bump()})
+    pool(S.scenes,1,async(sc,i)=>{const had=sc.img;await ensureImage(sc);setThumb(i);bump();if(!had)await sleep(1500)}),
+    pool(S.scenes,1,async sc=>{const had=sc.audio;await ensureVoice(sc);bump();if(!had)await sleep(1200)})
   ]);
 }
 
@@ -425,40 +448,41 @@ function drawSubs(c,sc,t,mode){
   if(ai<0)ai=t<sc.words[0].t0?0:sc.words.length-1;
   const ch=sc.words[ai].chunk;
   const cw=sc.words.filter(x=>x.chunk===ch);
-  c.font='900 68px system-ui,"Segoe UI",Arial,sans-serif';
-  c.textBaseline='middle';c.textAlign='left';c.lineJoin='round';c.lineWidth=14;
-  const sp=c.measureText(' ').width,maxW=W-110;
+  c.font=SUBFONT;
+  c.textBaseline='middle';c.textAlign='left';c.lineJoin='round';c.lineWidth=18;
+  const sp=c.measureText(' ').width,maxW=W-90;
   const lines=[];let cur=[],cwid=0;
   cw.forEach(o=>{
-    const w=c.measureText(o.w).width;
+    const w=c.measureText(o.w.toUpperCase()).width;
     if(cur.length&&cwid+sp+w>maxW){lines.push({a:cur,w:cwid});cur=[];cwid=0}
     cwid+=(cur.length?sp:0)+w;cur.push({o,w});
   });
   if(cur.length)lines.push({a:cur,w:cwid});
-  const lh=84;let y=H*0.72-(lines.length-1)*lh/2;
+  const lh=100;let y=H*0.62-(lines.length-1)*lh/2;
+  c.shadowColor='rgba(0,0,0,.6)';c.shadowBlur=14;c.shadowOffsetY=6;
   lines.forEach(L=>{
     let x=(W-L.w)/2;
     L.a.forEach(({o,w})=>{
       const act=mode==='karaoke'&&o===sc.words[ai];
-      c.strokeStyle='rgba(0,0,0,.95)';c.strokeText(o.w,x,y);
-      c.fillStyle=act?'#ffe14d':'#fff';c.fillText(o.w,x,y);
+      const wt=o.w.toUpperCase();
+      c.strokeStyle='#000';c.strokeText(wt,x,y);
+      c.fillStyle=act?'#ffb020':'#fff';c.fillText(wt,x,y);
       x+=w+sp;
     });
     y+=lh;
   });
+  c.shadowColor='transparent';c.shadowBlur=0;c.shadowOffsetY=0;
 }
-function drawTitle(c,t){
-  if(t>2.6||t<0)return;
-  const a=t<.3?t/.3:(t>2.2?(2.6-t)/.4:1);
+function drawCaption(c,sc,t){
+  // плашка сверху (время, место) в первые секунды сцены
+  const text=(sc.caption||'').toUpperCase();
+  if(!text||t>2.8)return;
+  const a=t<.2?t/.2:(t>2.4?(2.8-t)/.4:1);
   c.globalAlpha=Math.max(0,Math.min(1,a));
-  c.font='800 46px system-ui,"Segoe UI",Arial,sans-serif';c.textAlign='center';c.textBaseline='middle';
-  const words=S.title.split(/\s+/),lines=[];let cur='';
-  words.forEach(w=>{const tt=cur?cur+' '+w:w;if(c.measureText(tt).width>W-200&&cur){lines.push(cur);cur=w}else cur=tt});
-  if(cur)lines.push(cur);
-  const lh=58,bw=Math.min(W-60,Math.max(...lines.map(l=>c.measureText(l).width))+70),bh=lines.length*lh+34,by=120;
-  c.fillStyle='rgba(0,0,0,.6)';rr(c,(W-bw)/2,by,bw,bh,28);c.fill();
-  c.fillStyle='#fff';
-  lines.forEach((l,k)=>c.fillText(l,W/2,by+17+lh/2+k*lh));
+  c.font='700 64px Oswald,Impact,"Arial Narrow",sans-serif';c.textAlign='center';c.textBaseline='middle';
+  const bw=Math.min(W-60,c.measureText(text).width+80),bh=104,bx=(W-bw)/2,by=230;
+  c.fillStyle='rgba(15,15,20,.78)';rr(c,bx,by,bw,bh,22);c.fill();
+  c.fillStyle='#fff';c.fillText(text,W/2,by+bh/2+2,W-100);
   c.globalAlpha=1;
 }
 function renderFrame(c,t,total){
@@ -467,12 +491,20 @@ function renderFrame(c,t,total){
   const sc=S.scenes[i];
   const lt=Math.min(Math.max(t-sc.start,0),sc.dur),p=lt/sc.dur;
   c.fillStyle='#000';c.fillRect(0,0,W,H);
+  // «панч»: резкий наезд и тряска в начале каждой сцены
+  const k=Math.max(0,1-lt/0.3);
+  const zoom=1+0.09*k*k,sx=Math.sin(lt*95)*7*k,sy=Math.cos(lt*80)*5*k;
+  c.save();
+  c.translate(W/2+sx,H/2+sy);c.scale(zoom,zoom);c.translate(-W/2,-H/2);
   if(i>0&&lt<FADE){drawBg(c,S.scenes[i-1],i-1,1,1);drawBg(c,sc,i,p,lt/FADE)}
   else drawBg(c,sc,i,p,1);
-  const g=c.createLinearGradient(0,H*0.5,0,H);g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,'rgba(0,0,0,.65)');
-  c.fillStyle=g;c.fillRect(0,H*0.5,W,H*0.5);
+  c.restore();
+  // белая вспышка на стыке сцен
+  if(i>0&&lt<0.12){c.fillStyle=`rgba(255,255,255,${0.35*(1-lt/0.12)})`;c.fillRect(0,0,W,H)}
+  const g=c.createLinearGradient(0,H*0.45,0,H);g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,'rgba(0,0,0,.5)');
+  c.fillStyle=g;c.fillRect(0,H*0.45,W,H*0.55);
+  drawCaption(c,sc,lt);
   drawSubs(c,sc,lt,S.subs);
-  drawTitle(c,t);
   const pg=c.createLinearGradient(0,0,W,0);pg.addColorStop(0,'#7c5cff');pg.addColorStop(1,'#ff5c8a');
   c.fillStyle=pg;c.fillRect(0,0,W*Math.min(1,Math.max(0,t/total)),9);
 }
@@ -541,6 +573,7 @@ async function renderVideo(){
   S.scenes.forEach(sc=>{prep(sc,rate);sc.start=acc;acc+=sc.dur});
   const total=acc+0.7;
   await actx.resume();
+  try{await document.fonts.load(SUBFONT);await document.fonts.load('700 64px Oswald')}catch(e){}
   const dest=actx.createMediaStreamDestination();
   const stream=canvas.captureStream(30);
   dest.stream.getAudioTracks().forEach(t=>stream.addTrack(t));
@@ -561,6 +594,14 @@ async function renderVideo(){
     src.connect(vbus);src.start(t0+sc.start+0.1);
   });
   scheduleMusic($('mood').value,t0,total,parseFloat($('mvol').value),outs);
+  // запасная озвучка голосом телефона (слышна при записи, но в файл не попадает)
+  const synthTimers=[];
+  S.scenes.forEach(sc=>{
+    if(sc.audio||!('speechSynthesis' in window))return;
+    synthTimers.push(setTimeout(()=>{
+      try{const u=new SpeechSynthesisUtterance(sc.text);u.lang=$('lang').value==='English'?'en-US':'ru-RU';u.rate=rate;speechSynthesis.speak(u)}catch(e){}
+    },Math.max(0,(t0+sc.start+0.1-actx.currentTime)*1000)));
+  });
 
   renderFrame(c,0,total);
   $('cv').hidden=false;$('vid').hidden=true;
@@ -577,6 +618,8 @@ async function renderVideo(){
     frame();
   });
   renderFrame(c,total,total);
+  synthTimers.forEach(clearTimeout);
+  try{if('speechSynthesis' in window)speechSynthesis.cancel()}catch(e){}
   await sleep(250);
   rec.stop();await stopped;
   try{if(wake){wake.release();wake=null}}catch(e){}
@@ -596,8 +639,8 @@ async function produce(){
   const silent=S.scenes.filter(s=>!s.audio).length,noImg=S.scenes.filter(s=>!s.img).length;
   let tip=`Длина ${total.toFixed(0)} сек · ${(blob.size/1048576).toFixed(1)} МБ · формат ${ext.toUpperCase()}.`;
   if(total>59)tip+=' ⚠️ Длиннее 60 секунд — для Shorts выбери меньше сцен.';
-  if(silent)tip+=` ⚠️ У ${silent} сцен не загрузилась озвучка — нажми «Пересобрать».`;
-  if(noImg)tip+=` ⚠️ У ${noImg} сцен не нарисовались картинки — нажми «Пересобрать» или «Перерисовать» в раскадровке.`;
+  if(silent)tip+=` ⚠️ У ${silent} сцен не загрузилась озвучка, в файле они без голоса. Нажми «Дозагрузить и пересобрать».`;
+  if(noImg)tip+=` ⚠️ У ${noImg} сцен не нарисовались картинки. Нажми «Дозагрузить и пересобрать» или «Перерисовать» в раскадровке. Причину смотри в журнале.`;
   const t=$('tip');t.textContent=tip;t.className='note'+((silent||noImg||total>59)?' warn':'');t.hidden=false;
   $('m_title').textContent=S.yt;$('m_desc').textContent=S.desc;$('m_tags').textContent=S.tags;$('meta').hidden=false;
   setStep(4);status('Готово! ✅ Загрузи файл в YouTube Shorts / TikTok / Reels.',100);
@@ -651,7 +694,8 @@ async function run(){
       tags:(Array.isArray(j.hashtags)?j.hashtags:['#shorts']).join(' '),
       character:String(j.character||''),
       style:$('style').value,subs:$('subs').value,
-      scenes:j.scenes.map(s=>({text:String(s.narration||'').trim(),imagePrompt:String(s.image||'').trim(),seed:rnd(),img:null,audio:null}))
+      setting:String(j.setting||''),
+      scenes:j.scenes.map(s=>({text:String(s.narration||'').trim(),caption:String(s.caption||'').trim(),imagePrompt:String(s.image||'').trim(),seed:rnd(),img:null,audio:null}))
     };
     // один seed на весь ролик помогает держать единый вид персонажа
     const common=rnd();S.scenes.forEach(sc=>sc.seed=common);
@@ -682,6 +726,28 @@ async function rebuild(){
   }catch(e){status('Ошибка: '+(e&&e.message?e.message:e))}
   finally{lock(false)}
 }
+async function testNet(){
+  if(busy)return;lock(true);$('dbg').open=true;
+  const tests=[
+    ['Сюжет (текст)',()=>fetch('https://text.pollinations.ai/openai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'openai',messages:[{role:'user',content:'Say OK'}]})})],
+    ['Картинка',()=>fetch('https://image.pollinations.ai/prompt/red%20apple?width=256&height=256&nologo=true&seed=1')],
+    ['Голос',()=>fetch('https://text.pollinations.ai/Hello%20world?model=openai-audio&voice=nova')]
+  ];
+  for(const [name,fn] of tests){
+    status('Проверяю: '+name+'…');
+    const t0=performance.now();
+    try{
+      const r=await fn();
+      const body=r.ok?'':(await r.text()).slice(0,200);
+      log(`${name}: HTTP ${r.status} ${r.ok?'✓':'✗'} за ${((performance.now()-t0)/1000).toFixed(1)} с, ${r.headers.get('content-type')||'?'} ${body}`);
+    }catch(e){log(`${name}: ошибка «${(e&&e.message)||e}» (сеть блокируется или нет CORS)`)}
+  }
+  log('Браузер: '+navigator.userAgent.slice(0,90));
+  log('Запись видео: '+(window.MediaRecorder?'есть, формат '+(pickMime()||'нет'):'НЕТ'));
+  status('Проверка закончена. Открой «Журнал» ниже и пришли мне скриншот.');
+  lock(false);
+}
+$('testBtn').onclick=testNet;
 $('go').onclick=run;
 $('rebuild').onclick=rebuild;
 $('rndBtn').onclick=()=>{const a=IDEAS[cat];$('topic').value=a[Math.floor(Math.random()*a.length)]};
